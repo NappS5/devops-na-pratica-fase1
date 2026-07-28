@@ -1,0 +1,15 @@
+node_modules/
+coverage/
+.env
+npm-debug.log*
+.DS_Store
+
+# Terraform
+# .terraform/ e o state contêm cache local e podem conter dados sensíveis do provisionamento -> não versionar.
+# .terraform.lock.hcl é versionado propositalmente (não está listado aqui): fixa as versões
+# exatas dos providers, garantindo builds reprodutíveis entre máquinas e no pipeline de CI.
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/crash.log
+infra/*.tfvars

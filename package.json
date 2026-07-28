@@ -1,0 +1,22 @@
+{
+  "name": "devops-task-api",
+  "version": "1.0.0",
+  "description": "API simples de gerenciamento de tarefas, desenvolvida para a disciplina DevOps na Prática - Fase 1: Configuração e Automação Inicial",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "jest --runInBand",
+    "test:ci": "jest --ci --runInBand --coverage"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  }
+}
