@@ -42,4 +42,27 @@ describe('DevOps Task API', () => {
     expect(res.body).toHaveProperty('error');
     expect(typeof res.body.error).toBe('string');
   });
+
+  test('GET /metrics retorna 200', async () => {
+    const res = await request(app).get('/metrics');
+
+    expect(res.status).toBe(200);
+  });
+
+  test('GET /metrics retorna conteúdo compatível com o formato do Prometheus', async () => {
+    const res = await request(app).get('/metrics');
+
+    expect(res.headers['content-type']).toMatch(/text\/plain/);
+    expect(res.text).toContain('# HELP');
+    expect(res.text).toContain('# TYPE');
+    expect(res.text).toContain('http_requests_total');
+    expect(res.text).toContain('http_request_duration_seconds');
+  });
+
+  test('Respostas incluem headers de segurança aplicados pelo Helmet', async () => {
+    const res = await request(app).get('/health');
+
+    expect(res.headers).toHaveProperty('x-content-type-options', 'nosniff');
+    expect(res.headers).toHaveProperty('x-dns-prefetch-control');
+  });
 });

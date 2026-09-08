@@ -1,7 +1,7 @@
 {
   "name": "devops-task-api",
   "version": "1.0.0",
-  "description": "API simples de gerenciamento de tarefas, desenvolvida para a disciplina DevOps na Prática - Fase 1: Configuração e Automação Inicial",
+  "description": "API simples de gerenciamento de tarefas, desenvolvida para a disciplina DevOps na Prática - Fase 1 (Configuração e Automação Inicial) e Fase 2 (Entrega Contínua, Monitoramento e Segurança)",
   "main": "src/server.js",
   "engines": {
     "node": ">=24 <25"
@@ -13,7 +13,11 @@
   },
   "license": "MIT",
   "dependencies": {
-    "express": "^4.19.2"
+    "@prometheus-io/client": "^0.16.1",
+    "express": "^4.19.2",
+    "helmet": "^8.3.0",
+    "pino": "^10.3.1",
+    "pino-http": "^11.0.0"
   },
   "devDependencies": {
     "jest": "^29.7.0",

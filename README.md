@@ -1,6 +1,11 @@
 # DevOps Task API
 
-Projeto acadêmico individual da disciplina **DevOps na Prática** — **Fase 1: Configuração e Automação Inicial**.
+Projeto acadêmico individual da disciplina **DevOps na Prática**.
+
+Este README documenta as duas fases do projeto:
+
+- **Fase 1 — Configuração e Automação Inicial** (seções abaixo, preservadas integralmente).
+- **[Fase 2 — Entrega Contínua, Monitoramento e Segurança](#fase-2--entrega-contínua-monitoramento-e-segurança)** (nova seção ao final deste documento).
 
 ## Descrição
 
@@ -245,3 +250,250 @@ terraform destroy
 - [ ] Print do build e execução do container Docker (`docker build` / `docker run`).
 - [ ] Print do `terraform apply` com o output `api_url` e do `terraform destroy`.
 - [ ] Print do pipeline de CI executado com sucesso no GitHub Actions.
+
+---
+
+## Fase 2 — Entrega Contínua, Monitoramento e Segurança
+
+Esta seção documenta exclusivamente o que foi adicionado na **Fase 2**. Tudo o que está descrito nas seções anteriores (aplicação, testes originais, Dockerfile, Terraform e o pipeline de CI de testes/validação) permanece **inalterado e funcional** — a Fase 2 expande a arquitetura por cima da base da Fase 1, sem removê-la ou descaracterizá-la.
+
+### Arquitetura da Fase 2
+
+```
+DevOps/
+├── src/
+│   ├── app.js               # Express + Helmet + logging (pino-http) + métricas + rotas
+│   ├── metrics.js            # [NOVO] Registro Prometheus e middleware de coleta de métricas HTTP
+│   └── server.js
+├── tests/
+│   └── app.test.js           # Testes originais + testes de /metrics e headers do Helmet
+├── infra/                     # Terraform da Fase 1 — inalterado
+├── monitoring/
+│   └── prometheus.yml         # [NOVO] Configuração de scrape do Prometheus
+├── scripts/                   # [NOVO] Scripts de deploy/operação
+│   ├── deploy.sh
+│   ├── stop.sh
+│   ├── logs.sh
+│   └── status.sh
+├── .github/workflows/
+│   └── ci.yml                 # Expandido: audit, docker (build+scan+smoke), cd (GHCR)
+├── compose.yaml                # [NOVO] Orquestração local (app + prometheus)
+├── .env.example                 # [NOVO] Configurações não sensíveis de exemplo
+├── Dockerfile                   # Fase 1 — inalterado
+└── README.md
+```
+
+A aplicação continua sendo a mesma API em memória da Fase 1. O que muda é tudo o que envolve **entregar, observar e proteger** essa aplicação: um endpoint de métricas, logging estruturado, headers de segurança, orquestração via Docker Compose, scripts de operação e um pipeline que builda, escaneia, testa e publica a imagem no GitHub Container Registry.
+
+### Diferença entre CI e CD neste projeto
+
+- **CI (Integração Contínua)** roda em **todo push/pull request para `main`** e é puramente de *validação*: instala dependências, executa os testes (Jest/Supertest), audita dependências de produção (`npm audit`), valida o Terraform (`fmt`, `init`, `validate`), builda a imagem Docker, escaneia a imagem com Trivy e roda um smoke test do container. Nenhum artefato é publicado nessa etapa.
+- **CD (Entrega Contínua)** roda **apenas em push para `main`** e **apenas depois que todos os jobs de CI passam** (`needs: [test, audit, terraform, docker]`). O único efeito do CD é publicar a imagem Docker já validada no GitHub Container Registry (GHCR), com as tags `latest` e o SHA do commit.
+
+Chamamos isso de **entrega contínua**, e não de **implantação contínua**: o pipeline entrega a imagem pronta e versionada no registry, mas não a implanta automaticamente em nenhum ambiente de produção — isso é feito localmente (ou em qualquer host com Docker) via `docker compose` ou os scripts em `scripts/`, mantendo o projeto livre de qualquer serviço pago de nuvem.
+
+### Monitoramento
+
+- Dependência: [`@prometheus-io/client`](https://github.com/prometheus/client_js) — o pacote oficial da organização Prometheus para Node.js (sucessor direto do `prom-client`, hoje descontinuado).
+- [`src/metrics.js`](src/metrics.js) cria um `Registry` próprio, ativa as métricas padrão do processo Node.js (`collectDefaultMetrics`) e define:
+  - `http_requests_total` (Counter) — quantidade de requisições, com labels `method`, `route` e `status_code`;
+  - `http_request_duration_seconds` (Histogram) — duração das requisições, com os mesmos labels.
+- O label `route` usa o padrão de rota do Express (`req.route.path`, ex.: `/tasks`), nunca a URL bruta recebida — isso evita cardinalidade alta e vazamento de dados sensíveis (IDs, querystrings, etc.) nas labels.
+- `GET /metrics` (definido em [`src/app.js`](src/app.js)) expõe as métricas no formato de exposição do Prometheus (`text/plain; version=0.0.4`).
+- [`monitoring/prometheus.yml`](monitoring/prometheus.yml) configura o Prometheus (serviço `prometheus` no Compose) para coletar (`scrape`) o endpoint `app:3000/metrics` a cada 15 segundos.
+
+### Logging
+
+- Dependência: [`pino`](https://github.com/pinojs/pino) + [`pino-http`](https://github.com/pinojs/pino-http) — logger estruturado em JSON, leve e ativamente mantido.
+- Cada requisição gera uma linha de log em `stdout` contendo `method`, `url` (rota), `statusCode`, `responseTime` (ms) e `time` (timestamp).
+- Serializers customizados restringem o conteúdo logado a `{ method, url }` na requisição e `{ statusCode }` na resposta — **headers (incluindo `Authorization`), bodies, cookies, tokens e senhas nunca são logados**.
+- Nível de log configurável via `LOG_LEVEL` (`.env.example`); em ambiente de teste (`NODE_ENV=test`) o logger fica silencioso para não poluir a saída do Jest.
+- Como a aplicação sempre loga em `stdout`/`stderr`, os logs podem ser consultados com `docker compose logs app` ou `docker logs <container>`.
+
+### Segurança da aplicação
+
+- [`helmet`](https://github.com/helmetjs/helmet) aplicado como o primeiro middleware do Express, adicionando headers como `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `X-Frame-Options`, `Strict-Transport-Security`, entre outros.
+- O container continua executando como o usuário não-root `node` (herdado do Dockerfile da Fase 1, que não foi alterado).
+- Nenhum segredo é adicionado ao código-fonte. `.env` real permanece listado em [`.gitignore`](.gitignore) (já ignorado desde a Fase 1); apenas [`.env.example`](.env.example), com valores de exemplo não sensíveis, é versionado.
+- `npm audit --omit=dev` roda no CI (job `audit`) para detectar vulnerabilidades nas dependências de produção.
+- A imagem Docker é escaneada pelo Trivy no CI (job `docker`), com política dupla:
+  - uma passada de **relatório** (`severity: HIGH,CRITICAL`, `exit-code: 0`) que apenas lista as vulnerabilidades encontradas, sem falhar o pipeline;
+  - uma passada que **falha o pipeline** apenas para vulnerabilidades **CRITICAL com correção disponível** (`severity: CRITICAL`, `exit-code: 1`, `ignore-unfixed: true`) — assim, CVEs sem correção publicada (comuns em imagens base) não tornam o projeto inutilizável, mas uma vulnerabilidade crítica corrigível bloqueia a entrega.
+
+### Testes
+
+Os 4 testes originais da Fase 1 foram preservados e passam sem alteração. Foram adicionados em [`tests/app.test.js`](tests/app.test.js):
+
+- `GET /metrics` retorna `200`;
+- `GET /metrics` retorna conteúdo compatível com o formato do Prometheus (`Content-Type: text/plain`, presença de linhas `# HELP`/`# TYPE` e das métricas `http_requests_total` / `http_request_duration_seconds`);
+- headers de segurança do Helmet (`X-Content-Type-Options`, `X-DNS-Prefetch-Control`) presentes nas respostas;
+- os testes de `GET /health`, `GET /tasks` e `POST /tasks` (válido e inválido) continuam cobrindo os endpoints originais.
+
+```bash
+npm test        # 7 testes, todos passando
+npm run test:ci # mesma suíte, com relatório de cobertura, modo CI
+```
+
+### Docker Compose / Orquestração
+
+[`compose.yaml`](compose.yaml) orquestra dois serviços na mesma rede (criada automaticamente pelo Compose):
+
+| Serviço      | Imagem                          | Porta externa            | Observações                                                              |
+|--------------|----------------------------------|---------------------------|---------------------------------------------------------------------------|
+| `app`        | build local do `Dockerfile`      | `${APP_PORT:-3000}` → 3000 | `PORT=3000`, healthcheck HTTP em `/health`, `restart: unless-stopped`    |
+| `prometheus` | `prom/prometheus:v3.13.3` (oficial) | `9090` → 9090             | Monta `monitoring/prometheus.yml`, só inicia depois que `app` fica saudável (`depends_on: condition: service_healthy`) |
+
+Nenhum banco de dados, Redis, Grafana ou outro serviço além destes dois foi adicionado, conforme escopo da Fase 2.
+
+> Nota: o container do serviço `app` recebe o nome `devops-task-api-app` (e não `devops-task-api`) para não colidir com o container homônimo já gerenciado pelo Terraform da Fase 1 (`docker_container.app` em `infra/`). Terraform e Docker Compose provisionam a mesma aplicação por dois caminhos independentes e podem coexistir sem conflito.
+
+### Scripts de deploy
+
+Em [`scripts/`](scripts/), todos com `set -euo pipefail` e permissão de execução:
+
+- **`deploy.sh`** — verifica se o Docker está disponível e em execução, detecta `docker compose`/`docker-compose`, sobe os serviços (`up -d --build`), aguarda o container da aplicação ficar `healthy` (com timeout e exibição de logs em caso de falha) e faz um smoke test em `/health`, reportando sucesso ou falha claramente.
+- **`stop.sh`** — encerra e remove os containers do projeto (`compose down`).
+- **`logs.sh`** — exibe os logs dos serviços em tempo real (`compose logs -f --tail=100`), aceitando o nome de um serviço como argumento opcional (ex.: `./scripts/logs.sh app`).
+- **`status.sh`** — mostra o status atual dos containers (`compose ps`).
+
+### Gerenciamento de configurações
+
+Configurações ficam centralizadas em variáveis de ambiente, documentadas em [`.env.example`](.env.example):
+
+```bash
+# Porta interna em que o processo Node.js escuta dentro do container
+PORT=3000
+
+# Porta externa exposta no host pelo Docker Compose
+APP_PORT=3000
+
+# Nível de log da aplicação (trace, debug, info, warn, error, fatal, silent)
+LOG_LEVEL=info
+```
+
+Nunca versione um `.env` real — apenas o `.env.example`. Para uso local, copie-o:
+
+```bash
+cp .env.example .env
+```
+
+### Pipeline CI/CD ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
+
+Continua disparando em `push` e `pull_request` para `main`, agora com 5 jobs:
+
+1. **`test`** *(preservado da Fase 1)* — `npm ci` + `npm test`.
+2. **`audit`** *(novo)* — `npm ci` + `npm audit --omit=dev --audit-level=high`: falha o pipeline se houver vulnerabilidade `HIGH` ou `CRITICAL` nas dependências de produção.
+3. **`terraform`** *(preservado da Fase 1)* — `terraform fmt -check -recursive`, `terraform init -backend=false`, `terraform validate`.
+4. **`docker`** *(novo, depende de `test`)* — builda a imagem com `docker/build-push-action@v7` (sem publicar), escaneia com `aquasecurity/trivy-action@v0.36.0` (relatório HIGH/CRITICAL + falha em CRITICAL corrigível) e executa um smoke test real do container (`docker run` → aguarda `/health` responder `200` → remove o container).
+5. **`cd`** *(novo, depende de `test`, `audit`, `terraform` e `docker`)* — **somente em push para `main`**: autentica no GHCR com `docker/login-action@v4` usando `github.actor` e `secrets.GITHUB_TOKEN` (nenhum token manual é necessário), e publica a imagem com `docker/build-push-action@v7` em `ghcr.io/${{ github.repository }}`, com as tags `latest` e `${{ github.sha }}`. As permissões do job são restritas ao mínimo necessário:
+   ```yaml
+   permissions:
+     contents: read
+     packages: write
+   ```
+
+Todas as actions usam versões estáveis e fixas (majors atuais): `actions/checkout@v6`, `actions/setup-node@v7`, `hashicorp/setup-terraform@v4`, `docker/setup-buildx-action@v4`, `docker/build-push-action@v7`, `docker/login-action@v4` e `aquasecurity/trivy-action@v0.36.0` (nenhuma delas usa `:master`/`latest`).
+
+### GitHub Container Registry (GHCR)
+
+Após um merge/push em `main` com todos os jobs de CI verdes, a imagem fica disponível em:
+
+```
+ghcr.io/<owner>/<repo>:latest
+ghcr.io/<owner>/<repo>:<sha-do-commit>
+```
+
+Por padrão os pacotes publicados via `GITHUB_TOKEN` em um repositório privado ficam privados; em um repositório público, o pacote pode ser tornado público nas configurações do pacote no GitHub, se desejado.
+
+### Comandos de execução
+
+```bash
+# Instalação e testes (igual à Fase 1)
+npm ci
+npm test
+npm run test:ci
+
+# Deploy completo via Docker Compose (build + up + healthcheck + smoke test)
+./scripts/deploy.sh
+
+# Alternativa manual equivalente
+docker compose up -d --build
+docker compose config   # valida a configuração do compose
+docker compose ps
+
+# Ver status dos containers
+./scripts/status.sh
+
+# Acompanhar logs (Ctrl+C para sair)
+./scripts/logs.sh
+./scripts/logs.sh app       # apenas o serviço da aplicação
+docker compose logs app     # equivalente direto
+
+# Parar e remover os containers
+./scripts/stop.sh
+```
+
+### Como acessar cada componente
+
+- **API**: `http://localhost:3000` (ou `http://localhost:$APP_PORT` se customizado)
+- **Health check**: `curl http://localhost:3000/health`
+- **Métricas Prometheus**: `curl http://localhost:3000/metrics`
+- **Prometheus (UI)**: [http://localhost:9090](http://localhost:9090) — em **Status → Targets**, o job `devops-task-api` deve aparecer com estado `UP`.
+
+### Rollback usando uma tag de imagem anterior
+
+Como cada build no `main` publica uma tag imutável com o SHA do commit, o rollback consiste em apontar para uma imagem anterior conhecida, sem precisar reverter código:
+
+```bash
+# 1. Descubra o SHA do commit estável anterior (ex.: pelo histórico do GitHub Actions/GHCR)
+PREVIOUS_SHA=<sha-do-commit-anterior>
+
+# 2. Baixe a imagem publicada com esse SHA
+docker pull ghcr.io/<owner>/<repo>:${PREVIOUS_SHA}
+
+# 3. Marque-a localmente como a imagem que o compose.yaml consome
+docker tag ghcr.io/<owner>/<repo>:${PREVIOUS_SHA} devops-task-api:local
+
+# 4. Suba o compose reaproveitando essa imagem, sem rebuildar
+docker compose up -d --no-build
+```
+
+Para reverter o rollback, basta repetir o processo com a tag `latest` (ou o SHA da versão mais recente) e rodar `docker compose up -d --build` normalmente.
+
+### Evidências esperadas (Fase 2)
+
+- [ ] Print de `npm test` com os 7 testes passando (incluindo os 3 novos).
+- [ ] Print de `curl http://localhost:3000/metrics` mostrando métricas no formato Prometheus.
+- [ ] Print da aba **Status → Targets** do Prometheus em `http://localhost:9090` com o job `devops-task-api` em estado `UP`.
+- [ ] Print de `docker compose ps` com os serviços `app` (healthy) e `prometheus` em execução.
+- [ ] Print de `docker compose logs app` mostrando logs estruturados em JSON.
+- [ ] Print da execução de `./scripts/deploy.sh` com a mensagem de sucesso do smoke test.
+- [ ] Print do pipeline do GitHub Actions com os jobs `test`, `audit`, `terraform`, `docker` e `cd` verdes.
+- [ ] Print da imagem publicada em `ghcr.io/<owner>/<repo>` (aba *Packages* do repositório/perfil no GitHub).
+
+### Fluxo completo (Fase 2)
+
+```mermaid
+flowchart LR
+    A["Desenvolvimento"] --> B["Git"]
+    B --> C["GitHub"]
+    C --> D["CI"]
+    D --> E["Testes"]
+    E --> F["Segurança<br/>(npm audit)"]
+    F --> G["Build Docker"]
+    G --> H["Scan<br/>(Trivy)"]
+    H --> I["Smoke test"]
+    I --> J["GHCR"]
+    J --> K["Deploy"]
+    K --> L["Docker Compose"]
+    L --> M["Aplicação"]
+    M --> N["Monitoramento/Logs<br/>(Prometheus + stdout)"]
+```
+
+### Etapas que dependem do GitHub Actions para serem testadas
+
+Localmente é possível validar tudo até o job `docker` (build, scan com Trivy se instalado, smoke test). Os itens abaixo só podem ser exercitados de fato dentro do GitHub Actions, pois dependem do ambiente/segredos da plataforma:
+
+- o job `cd` completo, incluindo a autenticação real via `secrets.GITHUB_TOKEN` e o push efetivo para o GHCR;
+- a visualização do pacote publicado na aba *Packages* do GitHub;
+- o comportamento de `github.actor`/`github.repository` em um repositório real hospedado no GitHub.
