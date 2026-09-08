@@ -7,4 +7,8 @@ tests
 infra
 *.md
 .env
+.env.example
 .DS_Store
+compose.yaml
+monitoring
+scripts
